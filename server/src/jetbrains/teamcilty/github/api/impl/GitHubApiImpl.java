@@ -280,13 +280,65 @@ public abstract class GitHubApiImpl implements GitHubApi {
     }
   }
 
-  public void postComment(@NotNull final String ownerName,
-                          @NotNull final String repoName,
-                          @NotNull final String hash,
-                          @NotNull final String comment) throws IOException {
+  public void postCommitComment(@NotNull final String ownerName,
+                                @NotNull final String repoName,
+                                @NotNull final String hash,
+                                @NotNull final String comment) throws IOException {
 
-    final String requestUrl = myUrls.getAddCommentUrl(ownerName, repoName, hash);
+    final String requestUrl = myUrls.getAddCommitCommentUrl(ownerName, repoName, hash);
     final GSonEntity requestEntity = new GSonEntity(myGson, new IssueComment(comment));
+    final HttpPost post = new HttpPost(requestUrl);
+    try {
+      post.setEntity(requestEntity);
+      includeAuthentication(post);
+      setDefaultHeaders(post);
+
+      logRequest(post, requestEntity.getText());
+
+      final HttpResponse execute = myClient.execute(post);
+      if (execute.getStatusLine().getStatusCode() != HttpURLConnection.HTTP_CREATED) {
+        logFailedResponse(post, requestEntity.getText(), execute);
+        throw new IOException("Failed to complete request to GitHub. Status: " + execute.getStatusLine());
+      }
+    } finally {
+      post.abort();
+    }
+  }
+
+  public void postComment(@NotNull final String ownerName,
+                                @NotNull final String repoName,
+                                @NotNull final String branchName,
+                                @NotNull final String comment) throws IOException {
+    String pullRequestId = getPullRequestId(repoName, branchName);
+    if (pullRequestId == null){
+      throw new IOException("Failed to complete request, could not find pull request Id from branch: "+branchName);
+    }
+    final String requestUrl = myUrls.getAddCommentUrl(ownerName, repoName, pullRequestId);
+    final GSonEntity requestEntity = new GSonEntity(myGson, new IssueComment(comment));
+    final HttpPost post = new HttpPost(requestUrl);
+    try {
+      post.setEntity(requestEntity);
+      includeAuthentication(post);
+      setDefaultHeaders(post);
+
+      logRequest(post, requestEntity.getText());
+
+      final HttpResponse execute = myClient.execute(post);
+      if (execute.getStatusLine().getStatusCode() != HttpURLConnection.HTTP_CREATED) {
+        logFailedResponse(post, requestEntity.getText(), execute);
+        throw new IOException("Failed to complete request to GitHub. Status: " + execute.getStatusLine());
+      }
+    } finally {
+      post.abort();
+    }
+  }
+
+  @Override
+  public void postGist(@NotNull String ownerName, @NotNull String repoName, @NotNull String text) throws IOException {
+    final String requestUrl = myUrls.getAddGistUrl();
+    final Gist gist = new Gist("Build", true);
+    gist.addFile("build-result.md", text);
+    final GSonEntity requestEntity = new GSonEntity(myGson, gist);
     final HttpPost post = new HttpPost(requestUrl);
     try {
       post.setEntity(requestEntity);

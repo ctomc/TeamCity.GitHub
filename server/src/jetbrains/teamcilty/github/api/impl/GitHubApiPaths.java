@@ -53,10 +53,23 @@ public class GitHubApiPaths {
   }
 
   @NotNull
-  public String getAddCommentUrl(@NotNull final String ownerName,
-                                 @NotNull final String repoName,
-                                 @NotNull final String hash) {
+  public String getAddCommitCommentUrl(@NotNull final String ownerName,
+                                       @NotNull final String repoName,
+                                       @NotNull final String hash) {
     ///repos/:owner/:repo/commits/:sha/comments
     return myUrl + "/repos/" + ownerName + "/" + repoName + "/commits/" + hash + "/comments";
+  }
+
+  @NotNull
+  public String getAddCommentUrl(@NotNull final String ownerName,
+                                 @NotNull final String repoName,
+                                 @NotNull final String pullRequestId) {
+
+    return myUrl + "/repos/" + ownerName + "/" + repoName + "/issues/" + pullRequestId + "/comments";
+  }
+
+  @NotNull
+  public String getAddGistUrl() {
+    return myUrl + "/gists" ;
   }
 }

@@ -29,7 +29,9 @@ import jetbrains.teamcilty.github.util.LoggerHelper;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.StringReader;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 
@@ -162,14 +164,13 @@ public class ChangeStatusUpdater {
 
         myExecutor.submit(ExceptionUtil.catchAll("set change status on github", new Runnable() {
           @NotNull
-          private String getFailureText(@Nullable final TestFailureInfo failureInfo) {
+          private String getFailureText(@Nullable final STestRun failureInfo){
             final String no_data = "<no details avaliable>";
             if (failureInfo == null) return no_data;
 
-            final String stacktrace = failureInfo.getShortStacktrace();
+            final String stacktrace = failureInfo.getFullText();
             if (stacktrace == null || StringUtil.isEmptyOrSpaces(stacktrace)) return no_data;
-
-            return stacktrace;
+            return cleanErrorMessage(stacktrace, 30);
           }
 
           @NotNull
@@ -185,26 +186,25 @@ public class ChangeStatusUpdater {
           private String getComment(@NotNull RepositoryVersion version,
                                     @NotNull SRunningBuild build,
                                     boolean completed,
-                                    @NotNull String hash) {
-            final StringBuilder comment = new StringBuilder();
-            comment.append("TeamCity ");
-            final SBuildType bt = build.getBuildType();
-            if (bt != null) {
-              comment.append(bt.getFullName());
+                                    @NotNull String hash) throws IOException {
+            String desc = build.getBuildType() != null ? build.getBuildType().getDescription() : null;
+            StringBuilder comment = new StringBuilder();
+            if (desc != null && !desc.trim().isEmpty()) {
+              comment.append("**").append(desc).append("** ");
             }
-            comment.append(" [Build ");
-            comment.append(build.getBuildNumber());
-            comment.append("](");
-            comment.append(getViewResultsUrl(build));
-            comment.append(") ");
+            comment.append("[Build ")
+                    .append(build.getBuildNumber())
+                    .append("](")
+                    .append(myWeb.getViewResultsUrl(build)).append(") ");
 
             if (completed) {
               comment.append("outcome was **").append(build.getStatusDescriptor().getStatus().getText()).append("**");
             } else {
               comment.append("is now running");
             }
-
-            comment.append("\n");
+            comment.append(" using a merge of ")
+                    .append(hash)
+                    .append("\n");
 
             final String text = build.getStatusDescriptor().getText();
             if (completed && text != null) {
@@ -213,10 +213,13 @@ public class ChangeStatusUpdater {
               comment.append(" Build time: ");
               comment.append(getFriendlyDuration(build.getDuration()));
 
-              if (build.getBuildStatus() != Status.NORMAL) {
+              if (build.getBuildStatus() != Status.NORMAL && build.getShortStatistics().getFailedTestCount() > 0) {
+                final List<STestRun> failedTests = build.getShortStatistics().getFailedTests();
 
-                final List<STestRun> failedTests = build.getFullStatistics().getFailedTests();
-                if (!failedTests.isEmpty()) {
+                /*if (failedTests.size() > 5) {
+
+
+                } else */{
                   comment.append("\n### Failed tests\n");
                   comment.append("```\n");
 
@@ -225,24 +228,31 @@ public class ChangeStatusUpdater {
                     comment.append("");
                     comment.append(testRun.getTest().getName().toString());
                     comment.append(": ");
-                    comment.append(getFailureText(testRun.getFailureInfo()));
+                    comment.append(getFailureText(testRun));
                     comment.append("\n\n");
 
                     if (i == 10) {
                       comment.append("\n##### there are ")
-                              .append(build.getFullStatistics().getFailedTestCount() - i)
+                              .append(failedTests.size() - i)
                               .append(" more failed tests, see build details\n");
                       break;
                     }
                   }
                   comment.append("```\n");
                 }
+
               }
             }
 
             return comment.toString();
           }
 
+          /*public String postGist(List<STestRun> failedTests, SBuild build){
+            StringBuilder text = new StringBuilder();
+
+            return api.postGist(repositoryOwner, repositoryName, text.toString());
+          }
+*/
           @NotNull
           private String resolveCommitHash() {
             final String vcsBranch = version.getVcsBranch();
@@ -282,15 +292,26 @@ public class ChangeStatusUpdater {
             } catch (IOException e) {
               LOG.warn("Failed to update GitHub status for hash: " + hash + ", buildId: " + build.getBuildId() + ", status: " + status + ". " + e.getMessage(), e);
             }
-            if (addComments) {
+            if (addComments && version.getVcsBranch()!=null) {
+              if (!version.getVcsBranch().contains("pull")){
+                System.out.println("Branch '"+version.getVcsBranch()+"' is not pull branch, skipping.");
+                return;
+              }
+              if (status == GitHubChangeState.Pending) { //dont add comment for started builds
+                return;
+              }
+              if (build.getBuildStatus().isSuccessful()){ //dont add comment if status was successfull
+                return;
+              }
               try {
                 api.postComment(
                         repositoryOwner,
                         repositoryName,
-                        hash,
+                        version.getVcsBranch(),
                         getComment(version, build, status != GitHubChangeState.Pending, hash)
                 );
                 LOG.info("Added comment to GitHub commit: " + hash + ", buildId: " + build.getBuildId() + ", status: " + status);
+
               } catch (IOException e) {
                 LOG.warn("Failed add GitHub comment for branch: " + version.getVcsBranch() + ", buildId: " + build.getBuildId() + ", status: " + status + ". " + e.getMessage(), e);
               }
@@ -299,6 +320,31 @@ public class ChangeStatusUpdater {
         }));
       }
     };
+  }
+
+  public static String cleanErrorMessage(String text, int maxLines) {
+    StringBuilder buffer = new StringBuilder();
+    int lines = 0;
+    try (BufferedReader reader = new BufferedReader(new StringReader(text))) {
+      String line;
+      while ((line = reader.readLine()) != null && lines<=maxLines) {
+        if (line.contains("sun.reflect")
+                || line.contains("java.lang.reflect")
+                || line.contains("org.jboss.arquillian")
+                || line.contains("org.junit")
+                || line.contains("org.apache.maven")) {
+          continue;
+        }
+        line = line.replaceAll("&amp#27;"," ");
+        buffer.append(line).append("\n");
+        lines++;
+      }
+    } catch (IOException e) {
+      e.printStackTrace();
+      return text;
+    }
+
+    return buffer.toString();
   }
 
   public static interface Handler {
